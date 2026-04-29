@@ -31,12 +31,12 @@ from .partition import (
 from .profiling import DNNProfile, build_profiles, canonical_model_name
 
 
-MAIN_MODELS = ("alexnet", "vgg19", "googlenet", "densenet121", "resnet101")
+MAIN_MODELS = ("alexnet", "tiny_yolov2", "googlenet", "densenet121", "resnet101")
 SINGLE_PAIR_MODELS = MAIN_MODELS
 DEFAULT_COMPRESSION_RATIO = 4.0
-BANDWIDTHS = (0.1, 0.2, 0.5, 1, 2, 3, 4, 5)
+BANDWIDTHS = (0.5, 1.0, 2.0, 3.0, 4.0, 5.0)
 BETAS = (0, 0.5, 1, 2, 4)
-MODULE1_BANDWIDTHS = (0.05, 0.1, 0.2, 0.5, 1, 2, 3, 5)
+MODULE1_BANDWIDTHS = BANDWIDTHS
 MODULE1_LOCAL_GFLOPS = (1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0)
 SINGLE_PAIR_METHOD_ORDER = (
     "Only-Local",
@@ -70,7 +70,7 @@ MODULE1_METHOD_COLORS = {
 }
 MODEL_DISPLAY_NAMES = {
     "alexnet": "AlexNet",
-    "vgg19": "VGG19",
+    "tiny_yolov2": "TinyYOLOv2",
     "googlenet": "GoogLeNet",
     "densenet121": "DenseNet121",
     "resnet101": "ResNet101",
@@ -108,9 +108,10 @@ def mixed5_scenario() -> Scenario:
     return Scenario(
         name="mixed5",
         md_models=MAIN_MODELS,
-        md_gflops=(4.0, 1.8, 2.8, 2.2, 1.6),
-        es_slots_gflops=(20.0, 24.0, 28.0, 32.0, 36.0),
-        local_powers=(1.4, 1.8, 2.0, 2.2, 2.6),
+        md_gflops=(1.5, 3.0, 5.0, 7.0, 9.5),
+        es_slots_gflops=(22.0, 30.0, 35.0, 40.0, 48.0),
+        local_powers=(1.2, 1.5, 2.0, 2.5, 2.8),
+        upload_power_w=1.0,
     )
 
 
@@ -140,7 +141,7 @@ def online_bandwidth_trace_scenario() -> OnlineScenario:
             bandwidth_down_mb_s=10.0,
             external_load_factors=(0.0,) * es_count,
         )
-        for slot, bandwidth in enumerate((0.2, 0.2, 0.2, 1.0, 1.0, 1.0, 4.0, 4.0, 4.0))
+        for slot, bandwidth in enumerate((0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 4.0, 4.0, 4.0))
     )
     return OnlineScenario(name="online_bandwidth_trace", base_scenario=base, slot_duration_s=0.25, slots=slots)
 
@@ -183,9 +184,9 @@ def online_composite_nonstationary_scenario() -> OnlineScenario:
     base = mixed5_scenario()
     es_count = len(base.es_slots_gflops)
     phases = (
-        ((0, 1, 2), 0.2, (1.5, 0.5) + (0.0,) * (es_count - 2)),
-        ((0, 1, 2), 0.2, (1.5, 0.5) + (0.0,) * (es_count - 2)),
-        ((0, 1, 2), 0.2, (1.5, 0.5) + (0.0,) * (es_count - 2)),
+        ((0, 1, 2), 0.5, (1.5, 0.5) + (0.0,) * (es_count - 2)),
+        ((0, 1, 2), 0.5, (1.5, 0.5) + (0.0,) * (es_count - 2)),
+        ((0, 1, 2), 0.5, (1.5, 0.5) + (0.0,) * (es_count - 2)),
         (_all_active_ids(base), 1.0, (1.0, 1.0, 0.4) + (0.0,) * (es_count - 3)),
         (_all_active_ids(base), 1.0, (1.0, 1.0, 0.4) + (0.0,) * (es_count - 3)),
         (_all_active_ids(base), 1.0, (1.0, 1.0, 0.4) + (0.0,) * (es_count - 3)),
@@ -1937,7 +1938,7 @@ def run_all(
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Reproduce and optimize multi-user DNN partitioning experiments.")
-    parser.add_argument("--output", default="outputs_mixed5_ratio4_midonly", help="directory for CSV and plots")
+    parser.add_argument("--output", default="outputs_mixed5_yolo_ratio4_midonly", help="directory for CSV and plots")
     parser.add_argument("--alpha", type=float, default=1.0, help="latency weight")
     parser.add_argument("--beta", type=float, default=1.0, help="energy weight")
     parser.add_argument("--random-repeats", type=int, default=30, help="repeat count for random matching and random partition baselines")
