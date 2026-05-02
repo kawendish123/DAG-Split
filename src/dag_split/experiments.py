@@ -22,7 +22,6 @@ from .partition import (
     build_random_partition_matrix,
     build_result_matrix,
     chain_partition,
-    evaluate_partition,
     greedy_cut_partition,
     local_only_total,
     min_cut_partition,
@@ -57,12 +56,6 @@ MULTIUSER_METHOD_ORDER = (
     "MinCut+RMatch",
     "Rpartition+RMatch",
 )
-ONLINE_METHOD_ORDER = (
-    "Online Only-Local",
-    "Online Only-Server",
-    "Static MinCut+BMatch",
-    "Online MinCut+BMatch",
-)
 MODULE1_METHOD_COLORS = {
     "Only-Local": "#1f77b4",
     "Only-Server": "#ff7f0e",
@@ -87,23 +80,6 @@ class Scenario:
     upload_power_w: float = 1.0
 
 
-@dataclass(frozen=True)
-class OnlineSlotState:
-    slot: int
-    active_md_ids: Tuple[int, ...]
-    bandwidth_up_mb_s: float
-    bandwidth_down_mb_s: float
-    external_load_factors: Tuple[float, ...]
-
-
-@dataclass(frozen=True)
-class OnlineScenario:
-    name: str
-    base_scenario: Scenario
-    slot_duration_s: float
-    slots: Tuple[OnlineSlotState, ...]
-
-
 def mixed5_scenario() -> Scenario:
     return Scenario(
         name="mixed5",
@@ -123,88 +99,6 @@ def googlenet_stress_scenario() -> Scenario:
         es_slots_gflops=(3.0, 4.0, 5.0, 6.0),
         local_powers=(2.0, 2.0, 2.0, 2.0),
     )
-
-
-def _all_active_ids(scenario: Scenario) -> Tuple[int, ...]:
-    return tuple(range(len(scenario.md_models)))
-
-
-def online_bandwidth_trace_scenario() -> OnlineScenario:
-    base = mixed5_scenario()
-    es_count = len(base.es_slots_gflops)
-    active = _all_active_ids(base)
-    slots = tuple(
-        OnlineSlotState(
-            slot=slot,
-            active_md_ids=active,
-            bandwidth_up_mb_s=bandwidth,
-            bandwidth_down_mb_s=10.0,
-            external_load_factors=(0.0,) * es_count,
-        )
-        for slot, bandwidth in enumerate((0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 4.0, 4.0, 4.0))
-    )
-    return OnlineScenario(name="online_bandwidth_trace", base_scenario=base, slot_duration_s=0.25, slots=slots)
-
-
-def online_burst_load_scenario() -> OnlineScenario:
-    base = mixed5_scenario()
-    es_count = len(base.es_slots_gflops)
-    active_groups = (
-        (0, 1, 2),
-        (0, 1, 2),
-        (0, 1, 2),
-        _all_active_ids(base),
-        _all_active_ids(base),
-        _all_active_ids(base),
-        (2, 3, 4),
-        (2, 3, 4),
-        (2, 3, 4),
-    )
-    slots: List[OnlineSlotState] = []
-    for slot, active_ids in enumerate(active_groups):
-        if slot < 3:
-            load_factors = (0.0,) * es_count
-        elif slot < 6:
-            load_factors = (1.5, 1.0) + (0.0,) * (es_count - 2)
-        else:
-            load_factors = (0.5, 0.0) + (0.0,) * (es_count - 2)
-        slots.append(
-            OnlineSlotState(
-                slot=slot,
-                active_md_ids=tuple(active_ids),
-                bandwidth_up_mb_s=1.0,
-                bandwidth_down_mb_s=10.0,
-                external_load_factors=tuple(load_factors),
-            )
-        )
-    return OnlineScenario(name="online_burst_load", base_scenario=base, slot_duration_s=0.25, slots=tuple(slots))
-
-
-def online_composite_nonstationary_scenario() -> OnlineScenario:
-    base = mixed5_scenario()
-    es_count = len(base.es_slots_gflops)
-    phases = (
-        ((0, 1, 2), 0.5, (1.5, 0.5) + (0.0,) * (es_count - 2)),
-        ((0, 1, 2), 0.5, (1.5, 0.5) + (0.0,) * (es_count - 2)),
-        ((0, 1, 2), 0.5, (1.5, 0.5) + (0.0,) * (es_count - 2)),
-        (_all_active_ids(base), 1.0, (1.0, 1.0, 0.4) + (0.0,) * (es_count - 3)),
-        (_all_active_ids(base), 1.0, (1.0, 1.0, 0.4) + (0.0,) * (es_count - 3)),
-        (_all_active_ids(base), 1.0, (1.0, 1.0, 0.4) + (0.0,) * (es_count - 3)),
-        ((1, 2, 3, 4), 4.0, (0.2, 0.3, 0.8) + (0.0,) * (es_count - 3)),
-        ((1, 2, 3, 4), 4.0, (0.2, 0.3, 0.8) + (0.0,) * (es_count - 3)),
-        ((1, 2, 3, 4), 4.0, (0.2, 0.3, 0.8) + (0.0,) * (es_count - 3)),
-    )
-    slots = tuple(
-        OnlineSlotState(
-            slot=slot,
-            active_md_ids=tuple(active_ids),
-            bandwidth_up_mb_s=bandwidth_up_mb_s,
-            bandwidth_down_mb_s=10.0,
-            external_load_factors=tuple(load_factors),
-        )
-        for slot, (active_ids, bandwidth_up_mb_s, load_factors) in enumerate(phases)
-    )
-    return OnlineScenario(name="online_composite_nonstationary", base_scenario=base, slot_duration_s=0.25, slots=slots)
 
 
 def required_models(scenarios: Iterable[Scenario]) -> List[str]:
@@ -460,302 +354,6 @@ def run_single_pair_methods(
     return results, runtime_rows
 
 
-def _effective_server_gflops(
-    base_es_gflops: Sequence[float],
-    external_load_factors: Sequence[float],
-) -> Tuple[float, ...]:
-    if len(base_es_gflops) != len(external_load_factors):
-        raise ValueError("external_load_factors must match the number of server slots")
-    return tuple(max(base / (1.0 + max(load, 0.0)), 1e-6) for base, load in zip(base_es_gflops, external_load_factors))
-
-
-def _select_active_rows(
-    result_matrix: Sequence[Sequence[PartitionResult]],
-    active_md_ids: Sequence[int],
-) -> List[List[PartitionResult]]:
-    return [list(result_matrix[md_idx]) for md_idx in active_md_ids]
-
-
-def _assignment_from_selected(md_to_server: Sequence[int], selected: Sequence[PartitionResult]) -> AssignmentResult:
-    selected_tuple = tuple(selected)
-    return AssignmentResult(
-        total_cost=sum(item.cost for item in selected_tuple),
-        total_latency=sum(item.latency for item in selected_tuple),
-        total_energy=sum(item.energy for item in selected_tuple),
-        md_to_server=tuple(int(slot) for slot in md_to_server),
-        selected=selected_tuple,
-    )
-
-
-def _online_local_only_assignment(
-    scenario: Scenario,
-    active_md_ids: Sequence[int],
-    profiles: Mapping[str, DNNProfile],
-    slot_state: OnlineSlotState,
-    weights: CostWeights,
-    compression_ratio: float,
-) -> AssignmentResult:
-    selected: List[PartitionResult] = []
-    for md_idx in active_md_ids:
-        profile = profiles[scenario.md_models[md_idx].lower()]
-        selected.append(
-            evaluate_partition(
-                profile,
-                local_ids=profile.layer_ids,
-                cloud_ids=(),
-                md_gflops=scenario.md_gflops[md_idx],
-                es_gflops=1.0,
-                local_power_w=scenario.local_powers[md_idx],
-                upload_power_w=scenario.upload_power_w,
-                bandwidth_up_mb_s=slot_state.bandwidth_up_mb_s,
-                bandwidth_down_mb_s=slot_state.bandwidth_down_mb_s,
-                weights=weights,
-                method="online-local-only",
-                compression_ratio=compression_ratio,
-            )
-        )
-    return _assignment_from_selected(tuple(-1 for _ in selected), selected)
-
-
-def _re_evaluate_planned_assignment(
-    scenario: Scenario,
-    active_md_ids: Sequence[int],
-    planned_assignment: AssignmentResult,
-    profiles: Mapping[str, DNNProfile],
-    effective_es_gflops: Sequence[float],
-    queue_wait_times_s: Sequence[float],
-    slot_state: OnlineSlotState,
-    weights: CostWeights,
-    method: str,
-    compression_ratio: float,
-) -> AssignmentResult:
-    selected: List[PartitionResult] = []
-    md_to_server: List[int] = []
-    for local_idx, md_idx in enumerate(active_md_ids):
-        planned = planned_assignment.selected[local_idx]
-        server_slot = int(planned_assignment.md_to_server[local_idx])
-        profile = profiles[scenario.md_models[md_idx].lower()]
-        wait_time = float(queue_wait_times_s[server_slot]) if planned.cloud_nodes else 0.0
-        selected.append(
-            evaluate_partition(
-                profile,
-                local_ids=planned.local_nodes,
-                cloud_ids=planned.cloud_nodes,
-                md_gflops=scenario.md_gflops[md_idx],
-                es_gflops=effective_es_gflops[server_slot] if server_slot >= 0 else 1.0,
-                local_power_w=scenario.local_powers[md_idx],
-                upload_power_w=scenario.upload_power_w,
-                bandwidth_up_mb_s=slot_state.bandwidth_up_mb_s,
-                bandwidth_down_mb_s=slot_state.bandwidth_down_mb_s,
-                weights=weights,
-                method=method,
-                server_wait_time_s=wait_time,
-                compression_ratio=compression_ratio,
-            )
-        )
-        md_to_server.append(server_slot)
-    return _assignment_from_selected(md_to_server, selected)
-
-
-def _update_queue_waits(
-    queue_wait_times_s: Sequence[float],
-    assignment: AssignmentResult,
-    slot_duration_s: float,
-) -> Tuple[float, ...]:
-    demand_by_slot: Dict[int, float] = {slot: 0.0 for slot in range(len(queue_wait_times_s))}
-    for server_slot, result in zip(assignment.md_to_server, assignment.selected):
-        if server_slot >= 0 and result.cloud_nodes:
-            demand_by_slot[server_slot] += result.server_time
-    return tuple(
-        max(0.0, float(queue_wait_times_s[slot]) + demand_by_slot[slot] - slot_duration_s)
-        for slot in range(len(queue_wait_times_s))
-    )
-
-
-def _record_policy_switch(
-    stats: dict,
-    partition_label: str,
-    server_slot: int,
-) -> None:
-    stats["active_slots"] += 1
-    if stats["last_partition"] is not None:
-        partition_changed = partition_label != stats["last_partition"]
-        server_changed = server_slot != stats["last_server"]
-        if partition_changed:
-            stats["partition_switches"] += 1
-        if server_changed:
-            stats["server_switches"] += 1
-        if partition_changed or server_changed:
-            stats["policy_switches"] += 1
-    stats["last_partition"] = partition_label
-    stats["last_server"] = server_slot
-
-
-def run_online_scenario(
-    online_scenario: OnlineScenario,
-    profiles: Mapping[str, DNNProfile],
-    weights: CostWeights,
-    compression_ratio: float,
-) -> tuple[List[dict], List[dict]]:
-    scenario = online_scenario.base_scenario
-    avg_up = mean(slot.bandwidth_up_mb_s for slot in online_scenario.slots)
-    avg_down = mean(slot.bandwidth_down_mb_s for slot in online_scenario.slots)
-    avg_load = tuple(
-        mean(slot.external_load_factors[slot_idx] for slot in online_scenario.slots)
-        for slot_idx in range(len(scenario.es_slots_gflops))
-    )
-    static_es_gflops = _effective_server_gflops(scenario.es_slots_gflops, avg_load)
-    static_matrix = build_result_matrix(
-        profiles,
-        scenario.md_models,
-        scenario.md_gflops,
-        static_es_gflops,
-        scenario.local_powers,
-        scenario.upload_power_w,
-        avg_up,
-        method="min-cut",
-        bandwidth_down_mb_s=avg_down,
-        weights=weights,
-        server_wait_times_s=[0.0] * len(scenario.es_slots_gflops),
-        compression_ratio=compression_ratio,
-    )
-
-    queue_by_method: Dict[str, Tuple[float, ...]] = {
-        method: tuple(0.0 for _ in scenario.es_slots_gflops) for method in ONLINE_METHOD_ORDER
-    }
-    switch_stats: Dict[str, List[dict]] = {
-        method: [
-            {
-                "active_slots": 0,
-                "partition_switches": 0,
-                "server_switches": 0,
-                "policy_switches": 0,
-                "last_partition": None,
-                "last_server": None,
-            }
-            for _ in scenario.md_models
-        ]
-        for method in ONLINE_METHOD_ORDER
-    }
-    timeseries_rows: List[dict] = []
-
-    for slot_state in online_scenario.slots:
-        active_md_ids = tuple(slot_state.active_md_ids)
-        effective_es_gflops = _effective_server_gflops(scenario.es_slots_gflops, slot_state.external_load_factors)
-        for method in ONLINE_METHOD_ORDER:
-            current_queue = queue_by_method[method]
-            if method == "Online Only-Local":
-                assignment = _online_local_only_assignment(
-                    scenario,
-                    active_md_ids,
-                    profiles,
-                    slot_state,
-                    weights,
-                    compression_ratio,
-                )
-            elif method == "Online Only-Server":
-                matrix = build_result_matrix(
-                    profiles,
-                    scenario.md_models,
-                    scenario.md_gflops,
-                    effective_es_gflops,
-                    scenario.local_powers,
-                    scenario.upload_power_w,
-                    slot_state.bandwidth_up_mb_s,
-                    method="server-only",
-                    bandwidth_down_mb_s=slot_state.bandwidth_down_mb_s,
-                    weights=weights,
-                    server_wait_times_s=current_queue,
-                    compression_ratio=compression_ratio,
-                )
-                assignment = assign_min_cost(_select_active_rows(matrix, active_md_ids))
-            elif method == "Static MinCut+BMatch":
-                planned = assign_min_cost(_select_active_rows(static_matrix, active_md_ids))
-                assignment = _re_evaluate_planned_assignment(
-                    scenario,
-                    active_md_ids,
-                    planned,
-                    profiles,
-                    effective_es_gflops,
-                    current_queue,
-                    slot_state,
-                    weights,
-                    method="static-mincut-bmatch",
-                    compression_ratio=compression_ratio,
-                )
-            elif method == "Online MinCut+BMatch":
-                matrix = build_result_matrix(
-                    profiles,
-                    scenario.md_models,
-                    scenario.md_gflops,
-                    effective_es_gflops,
-                    scenario.local_powers,
-                    scenario.upload_power_w,
-                    slot_state.bandwidth_up_mb_s,
-                    method="min-cut",
-                    bandwidth_down_mb_s=slot_state.bandwidth_down_mb_s,
-                    weights=weights,
-                    server_wait_times_s=current_queue,
-                    compression_ratio=compression_ratio,
-                )
-                assignment = assign_min_cost(_select_active_rows(matrix, active_md_ids))
-            else:
-                raise ValueError(f"unsupported online method: {method}")
-
-            avg_task_queue_wait = (sum(result.wait_time for result in assignment.selected) / len(assignment.selected)) if assignment.selected else 0.0
-            avg_queue_backlog = mean(current_queue) if current_queue else 0.0
-            max_queue_backlog = max(current_queue) if current_queue else 0.0
-            timeseries_rows.append(
-                {
-                    "experiment": "online_extension",
-                    "scenario": online_scenario.name,
-                    "slot": slot_state.slot,
-                    "method": method,
-                    "compression_ratio": compression_ratio,
-                    "active_md_count": len(active_md_ids),
-                    "bandwidth_up_mb_s": slot_state.bandwidth_up_mb_s,
-                    "bandwidth_down_mb_s": slot_state.bandwidth_down_mb_s,
-                    "total_cost": assignment.total_cost,
-                    "total_latency": assignment.total_latency,
-                    "total_energy": assignment.total_energy,
-                    "avg_task_queue_wait": avg_task_queue_wait,
-                    "avg_queue_backlog": avg_queue_backlog,
-                    "max_queue_backlog": max_queue_backlog,
-                    "mean_external_load": mean(slot_state.external_load_factors) if slot_state.external_load_factors else 0.0,
-                }
-            )
-            for local_idx, md_idx in enumerate(active_md_ids):
-                result = assignment.selected[local_idx]
-                _record_policy_switch(
-                    switch_stats[method][md_idx],
-                    result.partition_label,
-                    int(assignment.md_to_server[local_idx]),
-                )
-            queue_by_method[method] = _update_queue_waits(current_queue, assignment, online_scenario.slot_duration_s)
-
-    policy_rows: List[dict] = []
-    for method, md_stats in switch_stats.items():
-        for md_idx, stats in enumerate(md_stats):
-            active_slots = int(stats["active_slots"])
-            if active_slots == 0:
-                continue
-            transitions = max(active_slots - 1, 1)
-            policy_rows.append(
-                {
-                    "experiment": "online_extension",
-                    "scenario": online_scenario.name,
-                    "method": method,
-                    "md": md_idx,
-                    "active_slots": active_slots,
-                    "partition_switches": int(stats["partition_switches"]),
-                    "server_switches": int(stats["server_switches"]),
-                    "policy_switches": int(stats["policy_switches"]),
-                    "policy_switch_rate": float(stats["policy_switches"]) / transitions,
-                }
-            )
-    return timeseries_rows, policy_rows
-
-
 def _single_pair_summary_row(
     experiment: str,
     scenario: str,
@@ -1003,117 +601,6 @@ def write_random_repeats_csv(path: Path, rows: Sequence[dict]) -> None:
         writer.writerows(rows)
 
 
-def _online_summary_rows(
-    timeseries_rows: Sequence[dict],
-    policy_rows: Sequence[dict],
-    compression_ratio: float,
-) -> List[dict]:
-    grouped: Dict[Tuple[str, str], List[dict]] = {}
-    for row in timeseries_rows:
-        grouped.setdefault((str(row["scenario"]), str(row["method"])), []).append(row)
-    policy_by_key: Dict[Tuple[str, str], List[dict]] = {}
-    for row in policy_rows:
-        policy_by_key.setdefault((str(row["scenario"]), str(row["method"])), []).append(row)
-
-    summary_rows: List[dict] = []
-    for (scenario, method), rows in grouped.items():
-        costs = [float(row["total_cost"]) for row in rows]
-        latencies = [float(row["total_latency"]) for row in rows]
-        energies = [float(row["total_energy"]) for row in rows]
-        queue_waits = [float(row["avg_task_queue_wait"]) for row in rows]
-        queue_backlogs = [float(row["avg_queue_backlog"]) for row in rows]
-        active_counts = [float(row["active_md_count"]) for row in rows]
-        policy_for_key = policy_by_key.get((scenario, method), [])
-        switch_rates = [float(row["policy_switch_rate"]) for row in policy_for_key]
-        summary_rows.append(
-            {
-                "experiment": "online_extension",
-                "scenario": scenario,
-                "method": method,
-                "compression_ratio": compression_ratio,
-                "slots": len(rows),
-                "avg_active_md_count": mean(active_counts) if active_counts else 0.0,
-                "avg_total_cost": mean(costs) if costs else 0.0,
-                "std_total_cost": pstdev(costs) if len(costs) > 1 else 0.0,
-                "avg_total_latency": mean(latencies) if latencies else 0.0,
-                "avg_total_energy": mean(energies) if energies else 0.0,
-                "avg_task_queue_wait": mean(queue_waits) if queue_waits else 0.0,
-                "avg_queue_backlog": mean(queue_backlogs) if queue_backlogs else 0.0,
-                "max_queue_backlog": max(float(row["max_queue_backlog"]) for row in rows) if rows else 0.0,
-                "policy_switch_rate": mean(switch_rates) if switch_rates else 0.0,
-            }
-        )
-    return summary_rows
-
-
-def write_online_summary_csv(path: Path, rows: Sequence[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = [
-        "experiment",
-        "scenario",
-        "method",
-        "compression_ratio",
-        "slots",
-        "avg_active_md_count",
-        "avg_total_cost",
-        "std_total_cost",
-        "avg_total_latency",
-        "avg_total_energy",
-        "avg_task_queue_wait",
-        "avg_queue_backlog",
-        "max_queue_backlog",
-        "policy_switch_rate",
-    ]
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def write_online_timeseries_csv(path: Path, rows: Sequence[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = [
-        "experiment",
-        "scenario",
-        "slot",
-        "method",
-        "compression_ratio",
-        "active_md_count",
-        "bandwidth_up_mb_s",
-        "bandwidth_down_mb_s",
-        "total_cost",
-        "total_latency",
-        "total_energy",
-        "avg_task_queue_wait",
-        "avg_queue_backlog",
-        "max_queue_backlog",
-        "mean_external_load",
-    ]
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def write_online_policy_switches_csv(path: Path, rows: Sequence[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = [
-        "experiment",
-        "scenario",
-        "method",
-        "md",
-        "active_slots",
-        "partition_switches",
-        "server_switches",
-        "policy_switches",
-        "policy_switch_rate",
-    ]
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
 def write_model_topology(path: Path, profiles: Mapping[str, DNNProfile]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -1290,34 +777,6 @@ def _plot_lines(
             plt.plot(xs, ys, marker="o", label=method)
     plt.xlabel(xlabel)
     plt.ylabel("total cost")
-    plt.title(title)
-    plt.grid(True, alpha=0.25)
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(path, dpi=180)
-    plt.close()
-
-
-def _plot_online_over_time(
-    path: Path,
-    rows: Sequence[dict],
-    scenario: str,
-    y_field: str,
-    ylabel: str,
-    title: str,
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    plt.figure(figsize=(8.4, 4.8))
-    for method in ONLINE_METHOD_ORDER:
-        selected = [row for row in rows if row["scenario"] == scenario and row["method"] == method]
-        selected = sorted(selected, key=lambda row: int(row["slot"]))
-        if not selected:
-            continue
-        xs = [int(row["slot"]) for row in selected]
-        ys = [float(row[y_field]) for row in selected]
-        plt.plot(xs, ys, marker="o", label=method)
-    plt.xlabel("time slot")
-    plt.ylabel(ylabel)
     plt.title(title)
     plt.grid(True, alpha=0.25)
     plt.legend()
@@ -1805,29 +1264,6 @@ def run_all(
         weights,
         compression_ratio=compression_ratio,
     )
-    online_timeseries_rows: List[dict] = []
-    online_policy_rows: List[dict] = []
-    for online_scenario in (
-        online_bandwidth_trace_scenario(),
-        online_burst_load_scenario(),
-        online_composite_nonstationary_scenario(),
-    ):
-        scenario_timeseries_rows, scenario_policy_rows = run_online_scenario(
-            online_scenario,
-            profiles,
-            weights,
-            compression_ratio,
-        )
-        online_timeseries_rows.extend(scenario_timeseries_rows)
-        online_policy_rows.extend(scenario_policy_rows)
-    online_summary_rows = _online_summary_rows(
-        online_timeseries_rows,
-        online_policy_rows,
-        compression_ratio=compression_ratio,
-    )
-    write_online_summary_csv(output_dir / "online_summary.csv", online_summary_rows)
-    write_online_timeseries_csv(output_dir / "online_timeseries.csv", online_timeseries_rows)
-    write_online_policy_switches_csv(output_dir / "online_policy_switches.csv", online_policy_rows)
 
     _plot_single_pair_models(output_dir / "single_pair_cost.png", single_pair_rows, "single_pair_partition", "standard_pair", "Single-pair partition comparison")
     _plot_single_pair_models(
@@ -1901,22 +1337,6 @@ def run_all(
     )
     _plot_runtime_by_model(output_dir / "algorithm_runtime.png", runtime_rows)
     _plot_scalability_runtime(output_dir / "scalability_runtime.png", scalability_rows)
-    _plot_online_over_time(
-        output_dir / "online_cost_over_time.png",
-        online_timeseries_rows,
-        "online_composite_nonstationary",
-        "total_cost",
-        "total cost",
-        "Online cost over time: composite non-stationary scenario",
-    )
-    _plot_online_over_time(
-        output_dir / "online_queue_over_time.png",
-        online_timeseries_rows,
-        "online_composite_nonstationary",
-        "avg_task_queue_wait",
-        "avg queue wait (s)",
-        "Online queue wait over time: composite non-stationary scenario",
-    )
 
     print(f"wrote results to {output_dir} (compression_ratio={compression_ratio})")
     for row in summary_rows:
@@ -1925,14 +1345,6 @@ def run_all(
                 f"{row['experiment']:20s} {row['scenario']:8s} {row['method']:20s} "
                 f"cost={row['total_cost']:.6f}+/-{row['total_cost_std']:.6f} "
                 f"latency={row['total_latency']:.6f} energy={row['total_energy']:.6f}"
-            )
-
-    for row in online_summary_rows:
-        if row["scenario"] == "online_composite_nonstationary":
-            print(
-                f"{row['scenario']:20s} {row['method']:20s} "
-                f"avg_cost={row['avg_total_cost']:.6f} avg_wait={row['avg_task_queue_wait']:.6f} "
-                f"switch_rate={row['policy_switch_rate']:.6f}"
             )
 
 
